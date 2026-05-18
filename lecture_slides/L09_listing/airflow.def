@@ -1,0 +1,78 @@
+Bootstrap: docker
+From: python:3.11-slim
+
+%labels
+    Version airflow-2.11.2-python3.11
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        libffi-dev \
+        libssl-dev \
+        libsasl2-dev \
+        libldap2-dev \
+        default-libmysqlclient-dev \
+        pkg-config \
+        && rm -rf /var/lib/apt/lists/*
+
+    mkdir -p /root/airflow/{dags,logs,plugins}
+
+    AIRFLOW_VERSION=2.11.2
+    PYTHON_VERSION=3.11
+    CONSTRAINT_URL="https://raw.githubusercontent.com/apache/airflow/constraints-${AIRFLOW_VERSION}/constraints-${PYTHON_VERSION}.txt"
+
+    pip install --no-cache-dir \
+        "apache-airflow[crypto,http,ssh,postgres,celery]==${AIRFLOW_VERSION}" \
+        apache-airflow-providers-singularity \
+        --constraint "${CONSTRAINT_URL}"
+
+    pip cache purge
+
+%environment
+    export AIRFLOW_HOME="${HOME}/airflow"
+    export AIRFLOW__CORE__EXECUTOR=SequentialExecutor
+    export AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="sqlite:///${HOME}/airflow/airflow.db"
+    export AIRFLOW__CORE__LOAD_EXAMPLES=False
+    export AIRFLOW__CORE__DAGS_FOLDER="${HOME}/airflow/dags"
+    export AIRFLOW__LOGGING__BASE_LOG_FOLDER="${HOME}/airflow/logs"
+    export AIRFLOW__CORE__PLUGINS_FOLDER="${HOME}/airflow/plugins"
+    # Generate a stable Fernet key with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    # then set AIRFLOW__CORE__FERNET_KEY in your environment or ~/.airflow_secrets
+
+%startscript
+    set -e
+    mkdir -p "${HOME}/airflow/dags" \
+             "${HOME}/airflow/logs" \
+             "${HOME}/airflow/plugins"
+
+    if [ ! -f "${HOME}/airflow/airflow.db" ]; then
+        echo "Initializing Airflow database..."
+        airflow db migrate
+        echo "Creating default admin user (admin/admin) — change this password."
+        airflow users create \
+            --username user \
+            --password admin \
+            --firstname Admin \
+            --lastname User \
+            --role Admin \
+            --email admin@localhost
+    fi
+
+    echo "Starting Airflow webserver on http://localhost:8080 ..."
+    airflow webserver --port 8080 --daemon \
+        --pid "${HOME}/airflow/webserver.pid" \
+        --log-file "${HOME}/airflow/logs/webserver.log"
+
+    echo "Starting Airflow scheduler..."
+    exec airflow scheduler
+
+%runscript
+    exec airflow "$@"
+
+%test
+    export AIRFLOW_HOME=/tmp/airflow
+    mkdir -p ${AIRFLOW_HOME}
+    airflow version
